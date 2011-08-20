@@ -1,0 +1,7 @@
+name = OpenTok API
+description = OpenTok API Video Chat
+core = 6.x
+dependencies[] = jquery_update
+dependencies[] = libraries
+dependencies[] = content
+

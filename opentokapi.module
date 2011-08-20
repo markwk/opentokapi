@@ -1,0 +1,642 @@
+<?php
+/**
+* Defined constants used in our code
+*/
+define('OPENTOKAPI_TOKEN_SENTINEL', 'T1==');
+define('OPENTOKAPI_SDK_VERSION', 'tbphp-v0.91.2011-08-07');
+define('OPENTOKAPI_STAGING_SERVER', 'https://staging.tokbox.com/hl');
+define('OPENTOKAPI_PRODUCTION_SERVER', 'https://api.opentokapi.com/hl');
+define('OPENTOKAPI_STAGING_JS', 'http://staging.tokbox.com/v0.91/js/TB.min.js');
+define('OPENTOKAPI_PRODUCTION_JS', 'http://static.opentokapi.com/v0.91/js/TB.min.js');
+/**
+* Implementation of hook_menu()
+* 
+*/
+function opentokapi_menu() {
+  $items = array();
+  $items['admin/settings/opentokapi'] = array(
+    'title' => t('OpenTok API'),
+    'description' => t('Configuration for the OpentokAPI module.'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('opentokapi_configuration_form'),
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  $items['opentokapi/get/streamwrapper'] = array(
+    'page callback' => 'opentokapi_get_stream_wrapper',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['opentokapi/save/connection'] = array(
+    'page callback' => 'opentokapi_save_connection',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+/**
+* Opentok API Configuration Form
+* 
+* @param mixed $form_state
+*/
+function opentokapi_configuration_form(&$form_state) {
+  $form['opentokapi_api_key'] = array(
+    '#type' => 'textfield',
+    '#default_value' => variable_get('opentokapi_api_key', ''),
+    '#title' => t('OpenTok API Key'),
+    '#required' => TRUE,
+  );
+
+  $form['opentokapi_api_secret'] = array(
+    '#type' => 'textfield',
+    '#default_value' => variable_get('opentokapi_api_secret', ''),
+    '#title' => t('OpenTok API Secret'),
+    '#required' => TRUE,
+  );
+
+  $form['opentokapi_staging'] = array(
+    '#type' => 'checkbox',
+    '#default_value' => variable_get('opentokapi_staging', FALSE),
+    '#title' => t('Use OpenTok staging server.'),
+  );
+
+  return system_settings_form($form);
+}
+/**
+* Trimming Spaces in form_validate()
+* 
+* @param mixed $form
+* @param string $form_state
+*/
+function opentokapi_configuration_form_validate($form, &$form_state) {
+  $form_state['values']['opentokapi_api_key'] = trim($form_state['values']['opentokapi_api_key']);
+  $form_state['values']['opentokapi_api_secret'] = trim($form_state['values']['opentokapi_api_secret']);
+}
+/**
+* Creating a field type for Content Type
+* 
+*/
+function opentokapi_field_info() {
+  return array(
+    'opentokapi' => array(
+      'label' => t('OpenTok Chat Session'),
+      'description' => t('This field stores an OpenTok chat session.'),
+    ),
+  );
+}
+/**
+* Settings for field
+* 
+* @param mixed $op
+* @param mixed $field
+* @return mixed
+*/
+function opentokapi_field_settings($op, $field){
+  switch($op){
+    case 'form':
+      $form = array();
+      $form['author_role'] = array(
+        '#type' => 'select',
+        '#title' => t('OpenTok Session role for author'),
+        '#options' => array(
+          'subscriber' => t('Subscriber'),
+          'publisher' => t('Publisher'),
+          'moderator' => t('Moderator'),
+        ),
+        '#default_value' => $field['author_role'],
+        '#required' => FALSE,
+      );
+      $form['regenerate_session'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Regenerate session on node save'),
+        '#default_value' => $field['regenerate_session'],
+      );
+      return $form;
+    case 'save':
+      return array('author_role', 'regenerate_session');
+    case 'database columns':
+      return array(
+        'api_key' => array(
+          'type' => 'varchar',
+          'length' => 32,
+        ),
+        'api_staging' => array(
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+          'default' => 0,
+        ),
+        'session_id' => array(
+          'type' => 'varchar',
+          'length' => 128,
+        ),
+        'auto_connect' => array(
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+          'default' => 0,
+        ),
+        'auto_publish' => array(
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+          'default' => 0,
+        ),
+        'push_talk' => array(
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+          'default' => 0,
+        ),
+        'roles' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'serialize' => TRUE,
+        ),
+      );
+  }
+}
+/**
+* Implementation of <field>_content_is_empty()
+* 
+* @param mixed $item
+* @param mixed $field
+*/
+function opentokapi_content_is_empty($item, $field) {
+  return FALSE;
+}
+/**
+* Wideget info.
+* 
+*/
+function opentokapi_widget_info() {
+  return array(
+    'opentokapi_default' => array(
+      'label' => t('OpenTok'),
+      'field types' => array('opentokapi'),
+      'multiple values' => CONTENT_HANDLE_CORE,
+      'callbacks' => array(
+        'default value' => CONTENT_CALLBACK_DEFAULT,
+      ),
+    ),
+  );
+}
+/**
+* OpenTok widget
+* 
+* @param mixed $form
+* @param mixed $form_state
+* @param mixed $field
+* @param mixed $items
+* @param mixed $delta
+*/
+function opentokapi_widget(&$form, &$form_state, $field, $items, $delta = 0) {
+  $element = array();
+  $element['api_key'] = array(
+    '#type' => 'value',
+    '#default_value' => isset($items[$delta]['api_key']) ? $items[$delta]['api_key'] : NULL,
+  );
+  $element['api_staging'] = array(
+    '#type' => 'value',
+    '#default_value' => isset($items[$delta]['api_staging']) ? $items[$delta]['api_staging'] : NULL,
+  );
+  $element['session_id'] = array(
+    '#type' => 'value',
+    '#default_value' => isset($items[$delta]['session_id']) ? $items[$delta]['session_id'] : NULL,
+  );
+  if(isset($items[$delta]['session_id'])){
+    $element['regenerate_session'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Regenerate OpenTok session'),
+      '#default_value' => $field['regenerate_session'],
+    );
+  }  
+  $element['auto_connect'] = array(
+    '#type' => 'checkbox',
+    '#default_value' => isset($items[$delta]['auto_connect']) ? $items[$delta]['auto_connect'] : FALSE,
+    '#title' => t('Auto-connect to OpenTok session'),
+  );
+  $element['auto_publish'] = array(
+    '#type' => 'checkbox',
+    '#default_value' => isset($items[$delta]['auto_publish']) ? $items[$delta]['auto_publish'] : FALSE,
+    '#title' => t('Auto-publish to OpenTok session'),
+  );
+  $element['push_talk'] = array(
+    '#type' => 'checkbox',
+    '#default_value' => isset($items[$delta]['push_talk']) ? $items[$delta]['push_talk'] : FALSE,
+    '#title' => t('Enable Push To Talk'),
+  );
+  $element['roles'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Session Roles'),
+    '#tree' => TRUE,
+  );
+  $roles = user_roles();
+  foreach ($roles as $role_id => $role_name) {
+    $element['roles'][$role_id] = array(
+      '#type' => 'select',
+      '#title' => t("OpenTok role for '!role'", array('!role' => $role_name)),
+      '#options' => array(
+        'subscriber' => t('Subscriber'),
+        'publisher' => t('Publisher'),
+        'moderator' => t('Moderator'),
+      ),
+      '#default_value' => isset($items[$delta]['roles'][$role_id]) ? $items[$delta]['roles'][$role_id] : 'subscriber',
+    );
+  }
+  $element['#tree'] = TRUE;
+  $element['#type'] = 'fieldset';
+  $element['#weight'] = $field['widget']['weight'];
+  $element['#title'] = $field['widget']['label'];
+  return $element;
+}
+
+function opentokapi_field_formatter_info() {
+  return array(
+    'default' => array(
+      'label' => t('Default'),
+      'field types' => array('opentokapi'),
+    ),
+  );
+}
+/**
+* Field formatter theme
+* 
+* @param mixed $element
+*/
+function theme_opentokapi_formatter_default($element){
+  global $user;
+  $field = content_fields($element['#field_name'], $element['#node']->type);
+  $api_staging = variable_get('opentokapi_staging', FALSE);
+  $api_key = variable_get('opentokapi_api_key', NULL);
+  $api_js = $api_staging ? OPENTOKAPI_STAGING_JS : OPENTOKAPI_PRODUCTION_JS;
+  
+  $item = $element['#item'];
+  if ($item['api_key'] == $api_key && $item['api_staging'] == $api_staging) {
+    $item_id = "{$element['#field_name']}-{$element['#node']->nid}-{$item['#delta']}";
+    $role = opentokapi_user_role($item['roles']);
+    if ($element['#node']->uid == $user->uid) {
+      $role = opentokapi_highest_role(array($role, $field['author_role']));
+    }
+    $output = theme('opentokapi_container', array('id' => $item_id, 'item' => $item));
+    drupal_add_js(array(
+      'openTok' => array(
+        $item_id => array(
+          'sessionId' => $item['session_id'],
+          'apiKey' => $api_key,
+          'connectionToken' => opentokapi_get_token($item['session_id'], $role),
+          'autoConnect' => (bool)$item['auto_connect'],
+          'autoPublish' => (bool)$item['auto_publish'],
+          'pushTalk' => (bool)$item['push_talk'],
+        ),
+      ),
+    ),'setting');
+    drupal_set_html_head('<script type="text/javascript" src="' . $api_js . '"></script>');
+    if ($jquery_resize_path = libraries_get_path('jquery.resize')) {
+      drupal_add_js($jquery_resize_path . '/jquery.ba-resize.js');
+    }
+    if ($jquery_opentokapi_path = libraries_get_path('jquery.opentok')) {
+      drupal_add_js($jquery_opentokapi_path . '/jquery.opentok.js');
+      drupal_add_js($jquery_opentokapi_path . '/jquery.opentok.layout.js');
+      drupal_add_css($jquery_opentokapi_path . '/jquery.opentok.css');
+      drupal_add_css($jquery_opentokapi_path . '/jquery.opentok.layout.css');
+    }
+    if ($json_js_path = libraries_get_path('json-js')) {
+      drupal_add_js($json_js_path . '/json2.js');
+    }
+    $opentokapi_path = drupal_get_path('module', 'opentokapi');
+    drupal_add_js($opentokapi_path . '/opentokapi.js');
+    drupal_add_css($opentokapi_path . '/opentokapi.css');
+  }
+  return $output;
+}
+/**
+* Implementation of hook_field()
+* 
+* @param mixed $op
+* @param mixed $node
+* @param mixed $field
+* @param mixed $items
+* @param mixed $teaser
+* @param mixed $page
+* @return mixed
+*/
+function opentokapi_field($op, &$node, $field, &$items, $teaser, $page) {
+  switch($op){
+    case 'presave':
+      if ($field['type'] == 'opentokapi') {
+        $api_key = variable_get('opentokapi_api_key', NULL);
+        $api_staging = variable_get('opentokapi_staging', FALSE);
+
+        foreach ($items as $delta => $item) {
+          if (empty($item['session_id']) || $item['regenerate_session'] || $item['api_key'] != $api_key || $item['api_staging'] != $api_staging) {
+            $items[$delta]['api_key'] = $api_key;
+            $items[$delta]['api_staging'] = $api_staging;
+            $items[$delta]['session_id'] = opentokapi_create_session(ip_address());
+          }
+        }
+      }
+    break;
+    case 'load':
+      if (empty($items)) {
+        return array();
+      }
+      foreach ($items as $delta => $item) {
+        if (!empty($item['roles'])) {
+          $items[$delta]['roles'] = unserialize($item['roles']);
+        }
+      }
+      return array($field['field_name'] => $items);
+  }
+}
+
+function opentokapi_get_token_js($session_id) {
+  $token = array('connectionToken' => opentokapi_get_token($session_id));
+  return drupal_json_output($token);
+}
+
+function opentokapi_get_token($session_id, $role = '', $expire_time = NULL) {
+  if (false) {
+    // TODO: Try to get session from database using OT SessionID.
+  }
+  else{
+    return opentokapi_generate_token($session_id, $role, $expire_time);
+  }
+}
+function opentokapi_user_role($role_map, $account = NULL) {
+  global $user;
+
+  if (!isset($account)) {
+    $account = $user;
+  }
+
+  $roles = array_intersect_key($role_map, $account->roles);
+
+  return opentokapi_highest_role($roles);
+}
+
+function opentokapi_highest_role($roles_list) {
+  $roles = array_values(
+    array_intersect(
+      array('moderator', 'publisher', 'subscriber'),
+      $roles_list
+    )
+  );
+
+  return !empty($roles) ? $roles[0] : '';
+}
+/**
+* Stream wrappers
+* 
+*/
+function opentokapi_get_stream_wrapper() {
+  $opentokapi_session = _opentokapi_drupal_json_decode($_REQUEST['opentokapi_session']);
+  $opentokapi_stream = _opentokapi_drupal_json_decode($_REQUEST['opentokapi_stream']);
+  echo theme('opentokapi_stream', array('session' => $opentokapi_session, 'stream' => $opentokapi_stream));
+}
+/**
+* Saving connection details
+* 
+*/
+function opentokapi_save_connection() {
+  global $user;
+  if ($user->uid && $opentokapi_connection = _opentokapi_drupal_json_decode($_REQUEST['opentokapi_connection'])) {
+    $record = array(
+      'connection_id' => $opentokapi_connection['connectionId'],
+      'uid' => $user->uid,
+      'creation_time' => substr($opentokapi_connection['creationTime'], 0, 10),
+    );
+    drupal_write_record('opentokapi_connection', $record);
+
+  }
+}
+/**
+* Get user id for connection
+* 
+* @param mixed $connection_id
+*/
+function opentokapi_get_connection_uid($connection_id) {
+  return db_result(db_query('SELECT uid FROM {opentokapi_connection} WHERE connection_id = "%s"', array($connection_id)));
+}
+function _opentokapi_drupal_json_decode($var) {
+  return json_decode($var, TRUE);
+}
+/**
+* Implementation of hook_theme().
+* 
+* @param mixed $existing
+* @param mixed $type
+* @param mixed $theme
+* @param mixed $path
+* @return mixed
+*/
+function opentokapi_theme($existing, $type, $theme, $path) {
+  return array(
+    'opentokapi_formatter_default' => array(
+      'arguments' => array('element' => NULL)
+    ),
+    'opentokapi_container' => array(
+      'arguments' => array('element' => NULL),
+    ),
+    'opentokapi_stream' => array(
+      'arguments' => array('session' => NULL, 'stream' => NULL),
+    ),
+  );
+}
+/**
+* Theming containers and buttons
+* 
+* @param mixed $element
+*/
+function theme_opentokapi_container($element) {
+  global $user;
+  $output = "<div id='{$element['id']}' class='opentok-container'><div class='opentok-controls'>";
+  $output .= l(t('Connect'), '', array('attributes' => array('class' => 'opentok-connect'))); 
+  $output .= l(t('Disconnect'), '', array('attributes' => array('class' => 'opentok-disconnect')));
+  $output .= l(t('Publish'), '', array('attributes' => array('class' => 'opentok-publish'))); 
+  $output .= '</div><div class="opentok-streams clear-block"><div class="opentok-publisher-wrapper">';
+  $output .= '<div class="opentok-username">' . theme('username', $user) . '</div>';
+  $output .= '<div class="opentok-publisher-controls">';
+  $output .= l(t('Push To Talk'), '', array('attributes' => array('class' => 'opentok-push-talk-mode')));
+  $output .= l(t('Talk'), '', array('attributes' => array('class' => 'opentok-push-talk-toggle')));
+  $output .= l(t('Snapshot'), '', array('attributes' => array('class' => 'opentok-snapshot-publisher')));
+  $output .= l(t('Unpublish'), '', array('attributes' => array('class' => 'opentok-unpublish'))); 
+  $output .= '</div><div class="opentok-publisher"></div></div></div></div>';
+  return $output;
+}
+/**
+* Theming Stream and buttons
+* 
+* @param mixed $variables
+*/
+function theme_opentokapi_stream($variables) {
+  $output = '<div class="opentok-stream-wrapper">';
+  $output .= '<div class="opentok-stream-controls">';
+  $output .= l(t('Mute'), '', array('attributes' => array('class' => 'opentok-mute'))); 
+  $output .= l(t('Unmute'), '', array('attributes' => array('class' => 'opentok-unmute')));
+  $output .= l(t('Snapshot'), '', array('attributes' => array('class' => 'opentok-snapshot-stream')));
+  if ($variables['session']['capabilities']['forceDisconnect']) {
+    $output .= l(t('Unpublish'), '', array('attributes' => array('class' => 'opentok-force-unpublish')));
+  }
+  if ($variables['session']['capabilities']['forceUnpublish']) {
+    $output .= l(t('Disconnect'), '', array('attributes' => array('class' => 'opentok-force-disconnect'))); 
+  }
+  $output .= l(t('Close'), '', array('attributes' => array('class' => 'opentok-close')));
+  $output .= '</div>';
+  if ($stream_uid = opentokapi_get_connection_uid($variables['stream']['connection']['connectionId'])) {
+    $stream_user = user_load($stream_uid);
+    $output .= '<div class="opentok-username">' . theme('username', $stream_user) . "</div>";
+  }
+  $output .= '<div class="opentok-stream">';
+  $output .= '</div>';
+  return $output;
+}
+/**
+* Create Session
+* 
+* @param mixed $location
+* @param mixed $properties
+* @return OpenTokSession
+*/
+function opentokapi_create_session($location, $properties=array()) {
+  $properties["location"] = $location;
+  $properties["api_key"] = variable_get('opentokapi_api_key', '');
+  $createSessionResult = _opentokapi_do_request("/session/create", $properties);
+  $createSessionXML = @simplexml_load_string($createSessionResult, 'SimpleXMLElement', LIBXML_NOCDATA);
+  if(!$createSessionXML) {
+    drupal_set_message(t("Failed to create session: Invalid response from server"), "error");
+  }
+
+  $errors = $createSessionXML->xpath("//error");
+  if($errors) {
+    $errMsg = $errors[0]->xpath("//@message");
+    if($errMsg) {
+      $errMsg = (string)$errMsg[0]['message'];
+    } else {
+      $errMsg = "Unknown error";
+    }
+    drupal_set_message("Error " . $createSessionXML->error['code'] ." ". $createSessionXML->error->children()->getName() . ": " . $errMsg, "error");
+  }
+  if(!isset($createSessionXML->Session->session_id)) {
+    drupal_set_message(t("Failed to create session."), "error");
+  }
+  $sessionId = $createSessionXML->Session->session_id;
+
+  return $sessionId;
+}
+
+
+/**
+* Generating New Token
+* 
+* @param mixed $session_id
+* @param mixed $role
+* @param mixed $expire_time
+* @param mixed $connection_data
+*/
+function opentokapi_generate_token($session_id='', $role='', $expire_time=NULL, $connection_data='') {
+  $create_time = time();
+  $nonce = microtime(true) . mt_rand();
+  if(!$role) {
+      $role = 'publisher';
+  }
+  $data_string = "session_id=$session_id&create_time=$create_time&role=$role&nonce=$nonce";
+  if(!is_null($expire_time))
+      $data_string .= "&expire_time=$expire_time";
+  if($connection_data != '') {
+      $data_string .= "&connection_data=" . urlencode($connection_data);
+  }
+  $sig = _opentokapi_sign_string($data_string, variable_get('opentokapi_api_secret', ''));
+  $api_key = variable_get('opentokapi_api_key', '');
+  $sdk_version = OPENTOKAPI_SDK_VERSION;
+  return trim("T1==" . base64_encode("partner_id=$api_key&sdk_version=$sdk_version&sig=$sig:$data_string"));  
+}
+/**
+* Signing function
+* 
+* @param mixed $string
+* @param mixed $secret
+* @return string
+*/
+function _opentokapi_sign_string($string, $secret) {
+  return hash_hmac("sha1", $string, $secret);
+}
+/**
+* Request to opentok api
+* 
+* @param mixed $url
+* @param mixed $data
+* @return string
+*/
+function _opentokapi_do_request($url, $data) {
+  $api_key = variable_get('opentokapi_api_key', '');
+  $api_secret = variable_get('opentokapi_api_secret', '');
+  $api_staging = variable_get('opentokapi_staging', FALSE);
+  $api_server = $api_staging ? OPENTOKAPI_STAGING_SERVER : OPENTOKAPI_PRODUCTION_SERVER;
+  $url = $api_server . $url;
+  $dataString = "";
+  foreach($data as $key => $value){
+    $value = urlencode($value);
+    $dataString .= "$key=$value&";
+  }
+  $dataString = rtrim($dataString,"&");
+  //Use file_get_contents if curl is not available for PHP
+  if(function_exists("curl_init")) {            
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, Array('Content-type: application/x-www-form-urlencoded'));
+    curl_setopt($ch, CURLOPT_HTTPHEADER, Array("X-TB-PARTNER-AUTH: $api_key:$api_secret"));
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_HEADER, 0);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    curl_setopt($ch, CURLOPT_POST, 1);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $dataString);
+
+    $res = curl_exec($ch);
+    if(curl_errno($ch)) {
+      drupal_set_message('Request error: ' . curl_error($ch));
+    }
+
+    curl_close($ch);
+  }
+  else {        
+    if (function_exists("file_get_contents")) {
+      $context_source = array ('http' => array (
+                  'method' => 'POST',
+                  'header'=> "Content-type: application/x-www-form-urlencoded\n"
+                  ."X-TB-PARTNER-AUTH: $api_key:$api_secret\n"
+                  . "Content-Length: " . strlen($dataString) . "\n",
+                  'content' => $dataString
+                  )
+                );
+      $context = stream_context_create($context_source);
+      $res = @file_get_contents( $url ,false, $context);                
+    }
+    else{
+      drupal_set_message("Your PHP installion neither supports the file_get_contents method nor cURL. Please enable one of these functions so that you can make API calls.");
+    }        
+  }        
+  return $res;
+}
+/**
+function opentokapi_create_session($location, $properties = array()) {
+  require_once 'SDK/OpenTokSDK.php'; 
+  $api_key = variable_get('opentokapi_api_key', NULL);
+  $api_secret = variable_get('opentokapi_api_secret', NULL);
+  $api_staging = variable_get('opentokapi_staging', FALSE);
+  $apiObj = new OpenTokSDK($api_key, $api_secret);
+  $session = $apiObj->create_session($location, $properties); 
+  //TODO: check for errors
+  return $session->getSessionId(); 
+}
+function opentokapi_generate_token($session_id = '', $role = '', $expire_time = NULL) {
+  require_once 'SDK/OpenTokSDK.php'; 
+  $api_key = variable_get('opentokapi_api_key', NULL);
+  $api_secret = variable_get('opentokapi_api_secret', NULL);
+  $api_staging = variable_get('opentokapi_staging', FALSE);
+  $apiObj = new OpenTokSDK($api_key, $api_secret);
+  return trim($apiObj->generate_token($session_id, $role, $expire_time)); 
+}
+**/
