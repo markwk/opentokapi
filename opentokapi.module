@@ -150,10 +150,11 @@ function opentokapi_field_settings($op, $field){
           'not null' => TRUE,
           'default' => 0,
         ),
-        'roles' => array(
-          'type' => 'varchar',
-          'length' => 255,
-          'serialize' => TRUE,
+        'session_type' => array(
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+          'default' => 0,
         ),
       );
   }
@@ -208,44 +209,33 @@ function opentokapi_widget(&$form, &$form_state, $field, $items, $delta = 0) {
   );
   if(isset($items[$delta]['session_id'])){
     $element['regenerate_session'] = array(
-      '#type' => 'checkbox',
+      '#type' => 'hidden',
       '#title' => t('Regenerate OpenTok session'),
       '#default_value' => $field['regenerate_session'],
     );
   }  
   $element['auto_connect'] = array(
-    '#type' => 'checkbox',
+    '#type' => 'hidden',
     '#default_value' => isset($items[$delta]['auto_connect']) ? $items[$delta]['auto_connect'] : FALSE,
     '#title' => t('Auto-connect to OpenTok session'),
   );
   $element['auto_publish'] = array(
-    '#type' => 'checkbox',
+    '#type' => 'hidden',
     '#default_value' => isset($items[$delta]['auto_publish']) ? $items[$delta]['auto_publish'] : FALSE,
     '#title' => t('Auto-publish to OpenTok session'),
   );
   $element['push_talk'] = array(
-    '#type' => 'checkbox',
+    '#type' => 'hidden',
     '#default_value' => isset($items[$delta]['push_talk']) ? $items[$delta]['push_talk'] : FALSE,
     '#title' => t('Enable Push To Talk'),
   );
-  $element['roles'] = array(
-    '#type' => 'fieldset',
-    '#title' => t('Session Roles'),
-    '#tree' => TRUE,
+  $session_options = array('Single Presenter Video Broadcast', 'Group Video Chat');
+  $element['session_type'] = array(
+    '#type' => 'radios',
+    '#options' => $session_options,
+    '#default_value' => isset($items[$delta]['session_type']) ? $items[$delta]['session_type'] : FALSE,
+    '#title' => t('Video session type'),
   );
-  $roles = user_roles();
-  foreach ($roles as $role_id => $role_name) {
-    $element['roles'][$role_id] = array(
-      '#type' => 'select',
-      '#title' => t("OpenTok role for '!role'", array('!role' => $role_name)),
-      '#options' => array(
-        'subscriber' => t('Subscriber'),
-        'publisher' => t('Publisher'),
-        'moderator' => t('Moderator'),
-      ),
-      '#default_value' => isset($items[$delta]['roles'][$role_id]) ? $items[$delta]['roles'][$role_id] : 'subscriber',
-    );
-  }
   $element['#tree'] = TRUE;
   $element['#type'] = 'fieldset';
   $element['#weight'] = $field['widget']['weight'];
@@ -276,9 +266,14 @@ function theme_opentokapi_formatter_default($element){
   $item = $element['#item'];
   if ($item['api_key'] == $api_key && $item['api_staging'] == $api_staging) {
     $item_id = "{$element['#field_name']}-{$element['#node']->nid}-{$item['#delta']}";
-    $role = opentokapi_user_role($item['roles']);
+    if ($item['session_type'] && $user->uid) {
+      $role = 'publisher';
+    }
+    else {
+      $role = 'subscriber';
+    }
     if ($element['#node']->uid == $user->uid) {
-      $role = opentokapi_highest_role(array($role, $field['author_role']));
+      $role = 'publisher';
     }
     $output = theme('opentokapi_container', array('id' => $item_id, 'item' => $item));
     drupal_add_js(array(
@@ -343,11 +338,6 @@ function opentokapi_field($op, &$node, $field, &$items, $teaser, $page) {
       if (empty($items)) {
         return array();
       }
-      foreach ($items as $delta => $item) {
-        if (!empty($item['roles'])) {
-          $items[$delta]['roles'] = unserialize($item['roles']);
-        }
-      }
       return array($field['field_name'] => $items);
   }
 }
@@ -364,28 +354,6 @@ function opentokapi_get_token($session_id, $role = '', $expire_time = NULL) {
   else{
     return opentokapi_generate_token($session_id, $role, $expire_time);
   }
-}
-function opentokapi_user_role($role_map, $account = NULL) {
-  global $user;
-
-  if (!isset($account)) {
-    $account = $user;
-  }
-
-  $roles = array_intersect_key($role_map, $account->roles);
-
-  return opentokapi_highest_role($roles);
-}
-
-function opentokapi_highest_role($roles_list) {
-  $roles = array_values(
-    array_intersect(
-      array('moderator', 'publisher', 'subscriber'),
-      $roles_list
-    )
-  );
-
-  return !empty($roles) ? $roles[0] : '';
 }
 /**
 * Stream wrappers
@@ -507,6 +475,7 @@ function opentokapi_create_session($location, $properties=array()) {
   $createSessionXML = @simplexml_load_string($createSessionResult, 'SimpleXMLElement', LIBXML_NOCDATA);
   if(!$createSessionXML) {
     drupal_set_message(t("Failed to create session: Invalid response from server"), "error");
+    return;
   }
 
   $errors = $createSessionXML->xpath("//error");
@@ -518,9 +487,11 @@ function opentokapi_create_session($location, $properties=array()) {
       $errMsg = "Unknown error";
     }
     drupal_set_message("Error " . $createSessionXML->error['code'] ." ". $createSessionXML->error->children()->getName() . ": " . $errMsg, "error");
+    return;
   }
   if(!isset($createSessionXML->Session->session_id)) {
     drupal_set_message(t("Failed to create session."), "error");
+    return;
   }
   $sessionId = $createSessionXML->Session->session_id;
 
@@ -597,6 +568,7 @@ function _opentokapi_do_request($url, $data) {
     $res = curl_exec($ch);
     if(curl_errno($ch)) {
       drupal_set_message('Request error: ' . curl_error($ch));
+      return;
     }
 
     curl_close($ch);
@@ -616,6 +588,7 @@ function _opentokapi_do_request($url, $data) {
     }
     else{
       drupal_set_message("Your PHP installion neither supports the file_get_contents method nor cURL. Please enable one of these functions so that you can make API calls.");
+      return;
     }        
   }        
   return $res;
