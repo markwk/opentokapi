@@ -5,7 +5,7 @@
 define('OPENTOKAPI_TOKEN_SENTINEL', 'T1==');
 define('OPENTOKAPI_SDK_VERSION', 'tbphp-v0.91.2011-08-07');
 define('OPENTOKAPI_STAGING_SERVER', 'https://staging.tokbox.com/hl');
-define('OPENTOKAPI_PRODUCTION_SERVER', 'https://api.opentokapi.com/hl');
+define('OPENTOKAPI_PRODUCTION_SERVER', 'https://api.opentok.com/hl');
 define('OPENTOKAPI_STAGING_JS', 'http://staging.tokbox.com/v0.91/js/TB.min.js');
 define('OPENTOKAPI_PRODUCTION_JS', 'http://static.opentokapi.com/v0.91/js/TB.min.js');
 /**
